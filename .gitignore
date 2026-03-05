@@ -1,0 +1,26 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Deep learning heavy files
+*.pt
+*.pth
+*.npz
+*.ckpt
+
+# Logs
+logs/
+*.log
+
+# System junk
+.DS_Store
+
+# Environment configs
+.env
+*.env
+
+# Temp
+tmp/
