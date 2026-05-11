@@ -1,26 +1,42 @@
-# Python
+# external repos
+4D-Humans/
+detectron2/
+chumpy/
+
+# generated renders
+scripts/frames_25d/
+scripts/*.mp4
+
+# wheel / binaries
+scripts/*.whl
+
+# outputs
+output/
+output_axis_test/
+temp_frames/
+upload_inbox/
+
+# data / assets
+data/
+
+# virtual env
 venv/
+venv39/
+venv310/
+.venv/
+
+# model weights
+models/
+checkpoints/
+weights/
+*.ckpt
+*.pth
+*.pt
+*.bin
+
+# python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
 
-# Deep learning heavy files
-*.pt
-*.pth
-*.npz
-*.ckpt
-
-# Logs
-logs/
-*.log
-
-# System junk
+# mac
 .DS_Store
-
-# Environment configs
-.env
-*.env
-
-# Temp
-tmp/
