@@ -587,6 +587,213 @@ def create_motion_json(
 
 
 # =========================================================
+# SwiftUI output contract postprocess
+# =========================================================
+
+def safe_postprocess_step(label, fn):
+    try:
+        fn()
+    except Exception as exc:
+        print("[WARN] %s failed: %s" % (label, exc))
+
+
+def count_png_frames_for_contract(out_folder):
+    return len(list_contract_png_frames(out_folder))
+
+
+def list_contract_png_frames(out_folder):
+    png_dir = os.path.join(out_folder, "png")
+    return sorted(glob.glob(os.path.join(png_dir, "*.png")))
+
+
+def read_motion_frame_count(out_folder):
+    motion_json_path = os.path.join(out_folder, "motion.json")
+    if not os.path.exists(motion_json_path):
+        return None
+
+    with open(motion_json_path, "r", encoding="utf-8") as f:
+        motion_json = json.load(f)
+
+    meta = motion_json.get("meta", {})
+    frame_count = meta.get("frame_count")
+    if frame_count is None:
+        return None
+
+    return int(frame_count)
+
+
+def read_motion_npz_fps(out_folder):
+    npz_path = os.path.join(out_folder, "motion_data.npz")
+    if not os.path.exists(npz_path):
+        return None
+
+    data = np.load(npz_path, allow_pickle=True)
+    if "fps" not in data.files:
+        return None
+
+    fps_arr = np.asarray(data["fps"]).reshape(-1)
+    if fps_arr.size == 0:
+        return None
+
+    fps_value = float(fps_arr[0])
+    if fps_value <= 0:
+        return None
+
+    return fps_value
+
+
+def read_motion_json_fps(out_folder):
+    motion_json_path = os.path.join(out_folder, "motion.json")
+    if not os.path.exists(motion_json_path):
+        return None
+
+    with open(motion_json_path, "r", encoding="utf-8") as f:
+        motion_json = json.load(f)
+
+    fps_value = motion_json.get("meta", {}).get("fps")
+    if fps_value is None:
+        return None
+
+    fps_value = float(fps_value)
+    if fps_value <= 0:
+        return None
+
+    return fps_value
+
+
+def resolve_contract_fps(out_folder, fallback_fps):
+    for reader in (read_motion_npz_fps, read_motion_json_fps):
+        try:
+            fps_value = reader(out_folder)
+        except Exception as exc:
+            print("[WARN] fps metadata read failed: %s" % exc)
+            fps_value = None
+
+        if fps_value is not None:
+            return fps_value
+
+    return float(fallback_fps)
+
+
+def ffmpeg_concat_escape(path):
+    return path.replace("'", "'\\''")
+
+
+def write_ffmpeg_concat_list(out_folder, png_frames, fps_value):
+    list_path = os.path.join(out_folder, ".swiftui_frames.txt")
+    frame_duration = 1.0 / float(fps_value)
+
+    with open(list_path, "w", encoding="utf-8") as f:
+        for frame_path in png_frames:
+            f.write("file '%s'\n" % ffmpeg_concat_escape(os.path.abspath(frame_path)))
+            f.write("duration %.10f\n" % frame_duration)
+
+        # ffmpeg concat demuxer needs the last file repeated for the final duration.
+        f.write("file '%s'\n" % ffmpeg_concat_escape(os.path.abspath(png_frames[-1])))
+
+    return list_path
+
+
+def create_output_mp4(out_folder, fps_value):
+    png_frames = list_contract_png_frames(out_folder)
+    if not png_frames:
+        raise RuntimeError("No PNG frames found for output.mp4")
+
+    output_mp4 = os.path.join(out_folder, "output.mp4")
+    list_path = write_ffmpeg_concat_list(out_folder, png_frames, fps_value)
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", list_path,
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        output_mp4,
+    ]
+
+    print("[INFO] Creating SwiftUI output video...")
+    print("[INFO] PNG frame count:", len(png_frames))
+    print("[INFO] First PNG frame:", png_frames[0])
+    print("[RUN]", " ".join(cmd))
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            if result.stderr:
+                print(result.stderr)
+            raise RuntimeError("ffmpeg output.mp4 failed with exit code %d" % result.returncode)
+    finally:
+        if os.path.exists(list_path):
+            os.remove(list_path)
+
+    print("[OK] Wrote:", output_mp4)
+
+
+def create_thumbnail(out_folder):
+    png_frames = list_contract_png_frames(out_folder)
+    if not png_frames:
+        print("[WARN] thumbnail source frame not found in:", os.path.join(out_folder, "png"))
+        return
+
+    source = png_frames[0]
+    target = os.path.join(out_folder, "thumbnail.jpg")
+
+    shutil.copyfile(source, target)
+    print("[INFO] Thumbnail source:", source)
+    print("[OK] Wrote:", target)
+
+
+def create_analysis_json(out_folder, fps_value):
+    result_id = os.path.basename(os.path.abspath(out_folder))
+
+    frame_count = read_motion_frame_count(out_folder)
+    if frame_count is None:
+        frame_count = count_png_frames_for_contract(out_folder)
+
+    fps_float = float(fps_value)
+    duration_sec = float(frame_count) / fps_float if fps_float > 0 else 0.0
+
+    analysis = {
+        "result_id": result_id,
+        "status": "completed",
+        "fps": fps_float,
+        "frame_count": int(frame_count),
+        "duration_sec": duration_sec,
+        "exercise_type": "squat",
+        "files": {
+            "video": "output.mp4",
+            "thumbnail": "thumbnail.jpg",
+        },
+        "motion": {
+            "motion_json": "motion.json",
+        },
+    }
+
+    analysis_path = os.path.join(out_folder, "analysis.json")
+    write_json(analysis_path, analysis)
+
+
+def create_swiftui_output_contract(out_folder, fps_value):
+    contract_fps = resolve_contract_fps(out_folder, fps_value)
+    print("[INFO] SwiftUI contract FPS:", contract_fps)
+
+    safe_postprocess_step(
+        "output.mp4 generation",
+        lambda: create_output_mp4(out_folder, contract_fps),
+    )
+    safe_postprocess_step(
+        "thumbnail.jpg generation",
+        lambda: create_thumbnail(out_folder),
+    )
+    safe_postprocess_step(
+        "analysis.json generation",
+        lambda: create_analysis_json(out_folder, contract_fps),
+    )
+
+
+# =========================================================
 # Main
 # =========================================================
 
@@ -657,6 +864,11 @@ def main():
         smooth_window=args.smooth_window,
         start_sec=start_sec,
         end_sec=end_sec,
+    )
+
+    create_swiftui_output_contract(
+        out_folder=out_folder,
+        fps_value=args.fps,
     )
 
     print("\n==============================")
