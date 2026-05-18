@@ -1,8 +1,9 @@
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import subprocess
 import os
 import numpy as np
+from pathlib import Path
 
 app = FastAPI()
 
@@ -11,6 +12,12 @@ API_TOKEN = os.environ.get("GPU_WORKER_TOKEN", "your-secret-token")
 BASE_DIR = "/home/yungbopark/gpu-worker"
 BASE_OUTPUT = f"{BASE_DIR}/output"
 UPLOAD_DIR = f"{BASE_DIR}/upload_inbox"
+
+ALLOWED_RESULT_FILES = {
+    "thumbnail.jpg": "image/jpeg",
+    "output.mp4": "video/mp4",
+    "analysis.json": "application/json",
+}
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -22,6 +29,57 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 def check_token(token):
     if token != API_TOKEN:
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+class ResultFileError(Exception):
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self.body = body
+
+
+def is_safe_name(name):
+    if not name:
+        return False
+    if name in {".", ".."}:
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    if ".." in name:
+        return False
+    return True
+
+
+def get_result_media_type(filename):
+    return ALLOWED_RESULT_FILES[filename]
+
+
+def get_result_file_path(folder, filename):
+    if not is_safe_name(folder):
+        raise ResultFileError(400, {"error": "invalid folder"})
+
+    if not is_safe_name(filename):
+        raise ResultFileError(400, {"error": "invalid file"})
+
+    if filename not in ALLOWED_RESULT_FILES:
+        raise ResultFileError(400, {"error": "file not allowed"})
+
+    base_path = Path(BASE_OUTPUT).resolve()
+    target_path = (base_path / folder / filename).resolve()
+
+    if target_path != base_path and base_path not in target_path.parents:
+        raise ResultFileError(400, {"error": "invalid result path"})
+
+    if not target_path.is_file():
+        raise ResultFileError(
+            404,
+            {
+                "error": "file not found",
+                "folder": folder,
+                "file": filename,
+            },
+        )
+
+    return target_path
 
 
 # =========================================================
@@ -172,8 +230,6 @@ def npz_timeseries(folder: str, file: str, x_api_token: str = Header(None)):
         "body_pose_delta": pose_delta.tolist(),
     }
 
-from fastapi.responses import FileResponse
-
 @app.get("/list-glb")
 def list_glb(folder: str, x_api_token: str = Header(None)):
     check_token(x_api_token)
@@ -182,6 +238,17 @@ def list_glb(folder: str, x_api_token: str = Header(None)):
     files = [f for f in os.listdir(path) if f.endswith(".glb")]
     files.sort()
     return files
+
+@app.get("/result-file")
+def result_file(folder: str, file: str, x_api_token: str = Header(None)):
+    check_token(x_api_token)
+
+    try:
+        path = get_result_file_path(folder, file)
+    except ResultFileError as e:
+        return JSONResponse(status_code=e.status_code, content=e.body)
+
+    return FileResponse(path, media_type=get_result_media_type(file))
 
 @app.get("/glb-file")
 def glb_file(folder: str, file: str, x_api_token: str = Header(None)):
